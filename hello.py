@@ -1,37 +1,36 @@
+import sched
+import time
+import atexit
+import sys
+import xlsxwriter
+from datetime import datetime
 from pubnub.callbacks import SubscribeCallback
 from pubnub.enums import PNStatusCategory
 from pubnub.pnconfiguration import PNConfiguration
 from pubnub.pubnub import PubNub
-import sched, time
-import atexit
-import sys
-import xlsxwriter
-from time import gmtime, strftime
-from datetime import datetime
 
+cycle = 0
+count = 5
+interval = 5
+shut_down = False
 
-
-workbook = xlsxwriter.Workbook('hello.xlsx')
-worksheet = workbook.add_worksheet()
-worksheet.write('A1', 'Ping')
-worksheet.write('B1', 'Ack')
-worksheet.write('C1', 'Arduino Time')
-worksheet.write('D1', 'RAW PING')
-worksheet.write('E1', 'RAW ACK')
+allEvents = []
+data = {
+    "ping": [],
+    "ack": [],
+    "upTime": [],
+    "rawPing": [],
+    "rawAck": []
+}
 
 pnconfig = PNConfiguration()
-
 pnconfig.subscribe_key = 'sub-c-05dce56c-3c2e-11e7-847e-02ee2ddab7fe'
 pnconfig.publish_key = 'pub-c-b6db3020-95a8-4c60-8d16-13345aaf8709'
 
 pubnub = PubNub(pnconfig)
-
 s = sched.scheduler(time.time, time.sleep)
 
 pubnubEvents = []
-
-count = 0
-shut_down = False
 
 def my_publish_callback(envelope, status):
     # Check whether request successfully completed or not
@@ -46,80 +45,78 @@ def my_publish_callback(envelope, status):
 class MySubscribeCallback(SubscribeCallback):
 
     def status(self, pubnub, status):
-        if status.category == PNStatusCategory.PNUnexpectedDisconnectCategory:
-            pass  # This event happens when radio / connectivity is lost
-
-        elif status.category == PNStatusCategory.PNConnectedCategory:
-            # Connect event. You can do stuff like publish, and know you'll get it.
-            # Or just use the connected event to confirm you are subscribed for
-            # UI / internal notifications, etc
+        if status.category == PNStatusCategory.PNConnectedCategory:
             pubnub.publish().channel("hello_world").message("Python script hello.py on channel hello_world...").pn_async(my_publish_callback)
-        elif status.category == PNStatusCategory.PNReconnectedCategory:
-            pass
-            # Happens as part of our regular operation. This event happens when
-            # radio / connectivity is lost, then regained.
-        elif status.category == PNStatusCategory.PNDecryptionErrorCategory:
-            pass
-            # Handle message decryption error. Probably client configured to
-            # encrypt messages and on live data feed it received plain text.
 
     def message(self, pubnub, message):
-        pass  # Handle new message stored in message.message
-        print(message.message)
+        pass
         t = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-        handle_incoming(str(message.message), t)
+        print(message.message)
+        handle_message(str(message.message), t)
 
 
-def handle_incoming(raw_message, timestamp):
-    pubnubEvents.append("at: " + timestamp + "    " + raw_message)
+def handle_message(raw_message, timestamp):
+    stamped_message = "at: " + timestamp + "    " + raw_message
+    allEvents.append(stamped_message)
     if str(raw_message[2]) == 'x':
         global shut_down
         shut_down = True
-    if str(raw_message[2]) == 's':
-        if str(raw_message[12:19]) == "pingAck":
-            curTime = raw_message[raw_message.find('T')+1:raw_message.find('}')-1]
-            print("Current Arduino uptime: " + curTime)
-            worksheet.write(count, 1, timestamp)
-            worksheet.write(count, 2, curTime)
-            worksheet.write(count, 4, "at: " + timestamp + "    " + raw_message)
-    if str(raw_message[2]) == 'p':
-        if str(raw_message[10:18]) == "hello.py":
-            worksheet.write(count, 0, timestamp)
-            worksheet.write(count, 3, "at: " + timestamp + "    " + raw_message)
-
-
+    if raw_message[2] == 'p':
+        if raw_message[10:18] == "hello.py":
+            data["ping"].insert(cycle, timestamp)
+            data["rawPing"].insert(cycle, stamped_message)
+    if raw_message[2] == 's':
+        if raw_message[12:19] == "pingAck":
+            cur_uptime = raw_message[raw_message.find('T')+1:raw_message.find('}')-1]
+            data["upTime"].insert(cycle, cur_uptime)
+            data["ack"].insert(cycle, timestamp)
+            data["rawAck"].insert(cycle, stamped_message)
 
 
 def ping(sc):
     pubnub.publish().channel("hello_world").message({
-    'ping': 'hello.py'
+        'ping': 'hello.py'
     }).pn_async(my_publish_callback)
-    s.enter(180, 1, ping, (sc,))
-
-    global count
-    global shut_down
-    count += 1
-
-    if count == 160 or shut_down:
+    s.enter(interval, 1, ping, (sc,))
+    global cycle
+    cycle += 1
+    if cycle == count or shut_down:
         pubnub.unsubscribe_all()
         sys.exit(0)
 
 
-def exit_status(subscribeEvents):
-    print("Program terminated")
-    file = open("output.txt", "w")
+def exit_status():
 
+    t = datetime.utcnow().strftime('%Y.%m.%d %H-%M-%S')
 
-    for e in subscribeEvents:
+    print("Program terminated at: " + t)
+
+    file = open(f"{t} output.txt", "w+")
+
+    for e in allEvents:
         file.write(e)
         file.write("\n")
 
     file.close()
+
+    workbook = xlsxwriter.Workbook(f"{t}.xlsx")
+    worksheet = workbook.add_worksheet()
+    col = 0
+
+    for k in data:
+        row = 0
+        worksheet.write(row, col, k)
+        row += 1
+        for v in data[k]:
+            worksheet.write(row, col, v)
+            row += 1
+        col += 1
+
     workbook.close()
 
 
 s.enter(10, 1, ping, (s,))
-atexit.register(exit_status, pubnubEvents)
+atexit.register(exit_status)
 pubnub.add_listener(MySubscribeCallback())
 pubnub.subscribe().channels('hello_world').execute()
 s.run()
