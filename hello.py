@@ -3,6 +3,7 @@ import time
 import atexit
 import sys
 import xlsxwriter
+import pytz
 from datetime import datetime
 from pubnub.callbacks import SubscribeCallback
 from pubnub.enums import PNStatusCategory
@@ -16,11 +17,11 @@ shut_down = False
 
 allEvents = []
 data = {
-    "ping": [],
-    "ack": [],
-    "upTime": [],
-    "rawPing": [],
-    "rawAck": []
+    "ping": ['empty'],
+    "ack": ['empty'],
+    "upTime": ['empty'],
+    "rawPing": ['empty'],
+    "rawAck": ['empty']
 }
 
 pnconfig = PNConfiguration()
@@ -50,7 +51,7 @@ class MySubscribeCallback(SubscribeCallback):
 
     def message(self, pubnub, message):
         pass
-        t = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+        t = datetime.now(pytz.timezone('US/Central')).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
         print(message.message)
         handle_message(str(message.message), t)
 
@@ -63,31 +64,42 @@ def handle_message(raw_message, timestamp):
         shut_down = True
     if raw_message[2] == 'p':
         if raw_message[10:18] == "hello.py":
-            data["ping"].insert(cycle, timestamp)
-            data["rawPing"].insert(cycle, stamped_message)
+            data["ping"][cycle] = timestamp
+            data["rawPing"][cycle] = stamped_message
     if raw_message[2] == 's':
         if raw_message[12:19] == "pingAck":
             cur_uptime = raw_message[raw_message.find('T')+1:raw_message.find('}')-1]
-            data["upTime"].insert(cycle, cur_uptime)
-            data["ack"].insert(cycle, timestamp)
-            data["rawAck"].insert(cycle, stamped_message)
+            data["upTime"][cycle] = cur_uptime
+            data["ack"][cycle] = timestamp
+            data["rawAck"][cycle] = stamped_message
 
 
-def ping(sc):
-    pubnub.publish().channel("hello_world").message({
-        'ping': 'hello.py'
-    }).pn_async(my_publish_callback)
-    s.enter(interval, 1, ping, (sc,))
+def ping(sc, first):
+
     global cycle
-    cycle += 1
-    if cycle == count or shut_down:
-        pubnub.unsubscribe_all()
+
+    if cycle == count - 1 or shut_down:
+        pubnub.publish().channel("hello_world").message("hello.py terminated...").pn_async(my_publish_callback)
+        pubnub.unsubscribe().channels('hello_world').execute()
         sys.exit(0)
+    elif first:
+        pubnub.publish().channel("hello_world").message({
+        'ping': 'hello.py'
+        }).pn_async(my_publish_callback)
+        s.enter(interval, 1, ping, (sc, False))
+    else:
+        for k in data:
+            data[k].append("empty")
+        cycle += 1
+        pubnub.publish().channel("hello_world").message({
+            'ping': 'hello.py'
+        }).pn_async(my_publish_callback)
+        s.enter(interval, 1, ping, (sc, False))
 
 
 def exit_status():
 
-    t = datetime.utcnow().strftime('%Y.%m.%d %H-%M-%S')
+    t = datetime.now(pytz.timezone('US/Central')).strftime('%Y.%m.%d %H-%M-%S')
 
     print("Program terminated at: " + t)
 
@@ -101,6 +113,11 @@ def exit_status():
 
     workbook = xlsxwriter.Workbook(f"{t}.xlsx")
     worksheet = workbook.add_worksheet()
+    worksheet.set_column('A:A', 22)
+    worksheet.set_column('B:B', 22)
+    worksheet.set_column('C:C', 12)
+    worksheet.set_column('D:D', 42)
+    worksheet.set_column('E:E', 62)
     col = 0
 
     for k in data:
@@ -111,11 +128,10 @@ def exit_status():
             worksheet.write(row, col, v)
             row += 1
         col += 1
-
     workbook.close()
 
 
-s.enter(10, 1, ping, (s,))
+s.enter(10, 1, ping, (s, True))
 atexit.register(exit_status)
 pubnub.add_listener(MySubscribeCallback())
 pubnub.subscribe().channels('hello_world').execute()
